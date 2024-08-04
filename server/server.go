@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
 type Client struct {
-	UUID string `json:"uuid"`
+	UserId string
+	UUID   string
+	Conn   *websocket.Conn
 }
 
 type RegisterRequest struct {
@@ -21,8 +24,24 @@ type RegisterResponse struct {
 	UUID string `json:"uuid"`
 }
 
+type Offer struct {
+	Type string `json:"type"`
+	SDP  string `json:"sdp"`
+	To   string `json:"to"`
+	From string `json:"from"`
+}
+
+type ICECandidate struct {
+	Type      string `json:"type"`
+	Candidate string `json:"candidate"`
+	To        string `json:"to"`
+	From      string `json:"from"`
+}
+
 type Server struct {
 	clients map[string]Client
+	mu      sync.Mutex
+	pool    []string
 }
 
 func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
@@ -46,7 +65,12 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	uuid := uuid.NewString()
-	s.clients[registerRequest.UserId] = Client{UUID: uuid}
+
+	s.mu.Lock()
+	s.clients[uuid] = Client{UserId: registerRequest.UserId, UUID: uuid}
+	s.pool = append(s.pool, uuid)
+	s.pairClients()
+	s.mu.Unlock()
 
 	response := RegisterResponse{UUID: uuid}
 	jsonResponse, err := json.Marshal(response)
@@ -57,6 +81,20 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(jsonResponse)
+}
+
+func (s *Server) pairClients() {
+	for len(s.pool) >= 2 {
+		client1UUID := s.pool[0]
+		client2UUID := s.pool[1]
+		s.pool = s.pool[2:]
+
+		// client1 := s.clients[client1UUID]
+		// client2 := s.clients[client2UUID]
+
+		log.Printf("Pairing clients %s: %s", client1UUID, client2UUID)
+		// see if we need to coordinate message passing b/w them
+	}
 }
 
 var upgrader = websocket.Upgrader{
@@ -78,25 +116,51 @@ func (s *Server) connectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//	s.clients[uuid] = Client{UUID: uuid}
+	s.mu.Lock()
+	client := s.clients[uuid]
+	client.Conn = conn
+	s.clients[uuid] = client
+	s.mu.Unlock()
 
-	go func() {
-		defer conn.Close()
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				log.Println("Read error:", err)
-				break
-			}
-			log.Printf("Received message from %s: %s", uuid, msg)
+	go s.handleMessages(client)
+}
 
-			err = conn.WriteMessage(websocket.TextMessage, msg)
-			if err != nil {
-				log.Println("Write error:", err)
-				break
-			}
+func (s *Server) handleMessages(client Client) {
+	defer client.Conn.Close()
+
+	for {
+		_, msg, err := client.Conn.ReadMessage()
+		if err != nil {
+			log.Println("Read error:", err)
+			break
 		}
-	}()
+		log.Printf("Received message from %s: %s", client.UUID, msg)
+
+		var offer Offer
+		var ice ICECandidate
+
+		if err := json.Unmarshal(msg, &offer); err == nil && offer.Type == "offer" {
+			s.forwardMessage(offer.To, msg)
+		} else if err := json.Unmarshal(msg, &ice); err == nil && ice.Type == "ice" {
+			s.forwardMessage(ice.To, msg)
+		}
+
+		// echo. To be removed
+		// err = conn.WriteMessage(websocket.TextMessage, msg)
+		// if err != nil {
+		// 	log.Println("Write error:", err)
+		// 	break
+		// }
+	}
+}
+
+func (s *Server) forwardMessage(to string, msg []byte) {
+	s.mu.Lock()
+	client, exists := s.clients[to]
+	s.mu.Unlock()
+	if exists {
+		client.Conn.WriteMessage(websocket.TextMessage, msg)
+	}
 }
 
 func main() {
