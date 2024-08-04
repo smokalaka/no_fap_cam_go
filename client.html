@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register User</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        .container {
+            text-align: center;
+        }
+        .input-field, .output-field {
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Register User</h1>
+        <div class="input-field">
+            <label for="userId">User ID:</label>
+            <input type="text" id="userId" name="userId">
+        </div>
+        <button onclick="registerUser()">Register</button>
+        <div class="output-field">
+            <label for="uuid">UUID:</label>
+            <input type="text" id="uuid" name="uuid" readonly>
+        </div>
+        <button onclick="connectUser()">WS Connect</button>
+    </div>
+    <div class="message-field">
+        <label for="message">Message:</label>
+        <input type="text" id="message" name="message">
+        <button onclick="sendMessage()">Send</button>
+    </div>
+
+    <script>
+        let ws;
+
+        async function connectUser() {
+            // TODO: maintain a global variable uuid, which would be set in register user
+            const uuid = document.getElementById('uuid').value;
+            ws = new WebSocket(`ws://localhost:8080/connect?uuid=${uuid}`);
+
+            ws.onopen = () => {
+                console.log('Websocket connection opened');
+            }
+
+            ws.onmessage = (event) => {
+                console.log('Received message:', event.data);
+            }
+
+            ws.onclose = () => {
+                console.log('WebSocket connection closed');
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function sendMessage() {
+            const message = document.getElementById('message').value;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(message);
+            } else {
+                console.error('WebSocket is not open');
+            }
+        }
+
+        async function registerUser() {
+            const userId = document.getElementById('userId').value;
+            const response = await fetch('http://localhost:8080/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ userId: userId })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('uuid').value = data.uuid;
+            } else {
+                alert('Failed to register user');
+            }
+        }
+    </script>
+</body>
+</html>
