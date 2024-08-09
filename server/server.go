@@ -14,6 +14,7 @@ type Client struct {
 	UserId string
 	UUID   string
 	Conn   *websocket.Conn
+	Peer   *Client
 }
 
 type RegisterRequest struct {
@@ -27,21 +28,22 @@ type RegisterResponse struct {
 type Offer struct {
 	Type string `json:"type"`
 	SDP  string `json:"sdp"`
-	To   string `json:"to"`
-	From string `json:"from"`
+}
+
+type Answer struct {
+	Type   string `json:"type"`
+	Answer string `json:"answer"`
 }
 
 type ICECandidate struct {
 	Type      string `json:"type"`
 	Candidate string `json:"candidate"`
-	To        string `json:"to"`
-	From      string `json:"from"`
 }
 
 type Server struct {
-	clients map[string]Client
+	clients map[string]*Client
 	mu      sync.Mutex
-	pool    []string
+	pool    []*Client
 }
 
 func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
@@ -67,9 +69,9 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 	uuid := uuid.NewString()
 
 	s.mu.Lock()
-	s.clients[uuid] = Client{UserId: registerRequest.UserId, UUID: uuid}
-	s.pool = append(s.pool, uuid)
-	s.pairClients()
+	client := &Client{UserId: registerRequest.UserId, UUID: uuid}
+	s.clients[uuid] = client
+	s.pool = append(s.pool, client)
 	s.mu.Unlock()
 
 	response := RegisterResponse{UUID: uuid}
@@ -85,15 +87,19 @@ func (s *Server) registerHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) pairClients() {
 	for len(s.pool) >= 2 {
-		client1UUID := s.pool[0]
-		client2UUID := s.pool[1]
+		client1 := s.pool[0]
+		client2 := s.pool[1]
 		s.pool = s.pool[2:]
 
-		// client1 := s.clients[client1UUID]
-		// client2 := s.clients[client2UUID]
+		if client1 != nil && client2 != nil {
+			client1.Peer = client2
+			client2.Peer = client1
 
-		log.Printf("Pairing clients %s: %s", client1UUID, client2UUID)
-		// see if we need to coordinate message passing b/w them
+			log.Printf("Pairing clients %s: %s", client1.UUID, client2.UUID)
+			// telling client1 to send offer
+			client1.Conn.WriteJSON(map[string]string{"type": "send_offer"})
+			// client2 would send answer after receiving offer from client1
+		}
 	}
 }
 
@@ -117,15 +123,16 @@ func (s *Server) connectHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
+	// TODO: Check if no client is found with this uuid
 	client := s.clients[uuid]
 	client.Conn = conn
-	s.clients[uuid] = client
+	s.pairClients()
 	s.mu.Unlock()
 
 	go s.handleMessages(client)
 }
 
-func (s *Server) handleMessages(client Client) {
+func (s *Server) handleMessages(client *Client) {
 	defer client.Conn.Close()
 
 	for {
@@ -137,28 +144,23 @@ func (s *Server) handleMessages(client Client) {
 		log.Printf("Received message from %s: %s", client.UUID, msg)
 
 		var offer Offer
+		var answer Answer
 		var ice ICECandidate
 
 		if err := json.Unmarshal(msg, &offer); err == nil && offer.Type == "offer" {
-			s.forwardMessage(offer.To, msg)
+			// TODO: Only forward message when still connected
+			s.forwardMessage(client.Peer, msg)
+		} else if err := json.Unmarshal(msg, &answer); err == nil && answer.Type == "answer" {
+			s.forwardMessage(client.Peer, msg)
 		} else if err := json.Unmarshal(msg, &ice); err == nil && ice.Type == "ice" {
-			s.forwardMessage(ice.To, msg)
+			// TODO: Only forward message when still connected
+			s.forwardMessage(client.Peer, msg)
 		}
-
-		// echo. To be removed
-		// err = conn.WriteMessage(websocket.TextMessage, msg)
-		// if err != nil {
-		// 	log.Println("Write error:", err)
-		// 	break
-		// }
 	}
 }
 
-func (s *Server) forwardMessage(to string, msg []byte) {
-	s.mu.Lock()
-	client, exists := s.clients[to]
-	s.mu.Unlock()
-	if exists {
+func (s *Server) forwardMessage(client *Client, msg []byte) {
+	if client != nil {
 		client.Conn.WriteMessage(websocket.TextMessage, msg)
 	}
 }
@@ -166,7 +168,7 @@ func (s *Server) forwardMessage(to string, msg []byte) {
 func main() {
 	log.Println("Starting server ....")
 	s := Server{
-		clients: make(map[string]Client),
+		clients: make(map[string]*Client),
 	}
 
 	http.HandleFunc("/register", s.registerHandler)

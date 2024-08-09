@@ -43,6 +43,19 @@
 
     <script>
         let ws;
+        let peerConnection;
+
+        const pc_config = {
+            iceServer: [
+                {
+                    urls: [
+                        'stun:stun1.l.google.com:19302',
+                        'stun:stun2.l.google.com:19302',
+                    ],
+                },
+            ],
+            iceCandidatePoolSize: 10,
+        }
 
         async function connectUser() {
             // TODO: maintain a global variable uuid, which would be set in register user
@@ -53,9 +66,24 @@
                 console.log('Websocket connection opened');
             }
 
-            ws.onmessage = (event) => {
-                console.log('Received message:', event.data);
-            }
+            ws.onmessage = async (event) => {
+                const message = JSON.parse(event.data);
+                if(message.type === "send_offer") {
+                    console.log("You should create an send an SDP offer");
+                    sendOffer();
+                } else if(message.type === "offer") {
+                    console.log("Received offer");
+                    await receiveOffer(message.data);
+                } else if(message.type === "answer") {
+                    console.log("Received answer");
+                    await receiveAnswer(message.data);
+                } else if(message.type === "ice") {
+                    console.log("Received ICE canddiate:", message.data);
+                    await receiveIceCandidate(message.data);
+                } else {
+                    console.log('Received message of undefined type :', message.type);
+                }
+            };
 
             ws.onclose = () => {
                 console.log('WebSocket connection closed');
@@ -63,6 +91,89 @@
 
             ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
+            };
+        }
+
+        async function receiveIceCandidate(candidate) {
+            if(peerConnection) {
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                    console.log("ICE candidate added");
+                } catch(error) {
+                    console.log("Error adding ICE candidate:", error);
+                }
+            } else {
+                console.error("Peer connection not established");
+            }
+            
+        }
+
+        async function receiveOffer(offer) {
+            if(!peerConnection) {
+                createPeerConnection();
+            }
+
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                const message = JSON.stringify({
+                    type: 'answer',
+                    data: answer
+                });
+
+                ws.send(message);
+                console.log("Answer sent");
+            } catch(error) {
+                console.error("Error processing offer: ", error);
+            }
+        }
+
+        async function receiveAnswer(answer) {
+            if(peerConnection) {
+                try {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                    console.log("Answer set as remote description");
+                } catch(error) {
+                    console.error("Error setting remote description: ", error);
+                }
+            } else {
+                console.error("Peer connection not established");
+            }
+            
+        }
+
+        function sendOffer() {
+            createPeerConnection();
+
+            peerConnection.createOffer({
+                offerToReceiveAudio: true,
+                offerToReceiveVideo: true
+            }).then(async (sdp) => {
+                await peerConnection.setLocalDescription(sdp);
+
+                const message = JSON.stringify({type: 'offer', data: sdp});
+                ws.send(message);
+                console.log("Offer sent");
+            }).catch(error => {
+                console.error('Error creating offer:', error);
+            });
+        }
+
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(pc_config);
+
+            peerConnection.onicecandidate = event => {
+                if(event.candidate) {
+                    const message = JSON.stringify({
+                        type: 'ice',
+                        data: event.candidate
+                    });
+                    ws.send(message);
+                    console.log("ICE cadidate sent");
+                }
             };
         }
 
@@ -88,6 +199,7 @@
             if (response.ok) {
                 const data = await response.json();
                 document.getElementById('uuid').value = data.uuid;
+                connectUser();
             } else {
                 alert('Failed to register user');
             }
