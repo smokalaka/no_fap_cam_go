@@ -12,12 +12,57 @@
             align-items: center;
             justify-content: center;
             height: 100vh;
+            background-color: #f0f2f5;
+            margin: 0;
         }
         .container {
             text-align: center;
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
         }
-        .input-field, .output-field {
-            margin: 10px 0;
+        h1 {
+            color: #333;
+        }
+        .input-field, .output-field, .message-field {
+            margin: 15px 0;
+        }
+        .input-field label, .output-field label, .message-field label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+        }
+        .input-field input, .output-field input, .message-field input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 15px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #video-container {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 20px;
+        }
+        video {
+            width: 45%;
+            border: 2px solid #ccc;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
         }
     </style>
 </head>
@@ -28,22 +73,27 @@
             <label for="userId">User ID:</label>
             <input type="text" id="userId" name="userId">
         </div>
-        <button onclick="registerUser()">Register</button>
+        <button onclick="registerUser()">Register & Connect</button>
         <div class="output-field">
             <label for="uuid">UUID:</label>
             <input type="text" id="uuid" name="uuid" readonly>
         </div>
-        <button onclick="connectUser()">WS Connect</button>
-    </div>
-    <div class="message-field">
-        <label for="message">Message:</label>
-        <input type="text" id="message" name="message">
-        <button onclick="sendMessage()">Send</button>
+        <div class="message-field">
+            <label for="message">Message:</label>
+            <input type="text" id="message" name="message">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+        <div id="video-container">
+            <video id="localVideo" autoplay muted></video>
+            <video id="remoteVideo" autoplay></video>
+        </div>
     </div>
 
     <script>
         let ws;
         let peerConnection;
+        let localStream;
+        let remoteStream = new MediaStream();
 
         const pc_config = {
             iceServer: [
@@ -145,26 +195,43 @@
             
         }
 
-        function sendOffer() {
-            createPeerConnection();
+        async function sendOffer() {
+            await createPeerConnection();
 
-            peerConnection.createOffer({
-                offerToReceiveAudio: true,
-                offerToReceiveVideo: true
-            }).then(async (sdp) => {
-                await peerConnection.setLocalDescription(sdp);
+            try {
+                const offer = await peerConnection.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: true
+                });
+                await peerConnection.setLocalDescription(offer);
 
-                const message = JSON.stringify({type: 'offer', data: sdp});
+                const message = JSON.stringify({ type: 'offer', data: offer });
                 ws.send(message);
                 console.log("Offer sent");
-            }).catch(error => {
-                console.error('Error creating offer:', error);
-            });
+            } catch (error) {
+                console.error("Error creating offer:", error);
+            }
         }
 
-        function createPeerConnection() {
+        async function createPeerConnection() {
             peerConnection = new RTCPeerConnection(pc_config);
 
+            // localStream = await navigator.mediaDevices.getUserMedia({ 'video': true, 'audio': true });
+            // localStream.getTracks().forEach(track => {
+            //     console.log("Adding tracks to peerConnn: ", track);
+            //     peerConnection.addTrack(track, localStream);
+            // });
+
+            // document.getElementById('localVideo').srcObject = localStream;
+
+            // peerConnection.ontrack = event => {
+            //     console.log("Track received: ", event);
+            //     event.streams[0].getTracks().forEach(track => {
+            //         remoteStream.addTrack(track);
+            //     });
+            //     document.getElementById('remoteVideo').srcObject = remoteStream;
+            // };
+            
             peerConnection.onicecandidate = event => {
                 if(event.candidate) {
                     const message = JSON.stringify({
@@ -175,8 +242,15 @@
                     console.log("ICE cadidate sent");
                 }
             };
+
+            peerConnection.addEventListener('connectionstatechange', event => {
+                if (peerConnection.connectionState === 'connected') {
+                    console.log("Peers connected!");
+                }
+            });
         }
 
+        // TODO: Decide to remove as not needed as of now.
         function sendMessage() {
             const message = document.getElementById('message').value;
             if (ws && ws.readyState === WebSocket.OPEN) {
